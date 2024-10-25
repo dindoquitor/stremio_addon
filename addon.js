@@ -1,110 +1,147 @@
-const { addonBuilder } = require('stremio-addon-sdk')
-const axios = require('axios')
-require('dotenv').config()
+const { addonBuilder } = require("stremio-addon-sdk");
+const axios = require("axios");
+require("dotenv").config();
 
 // Get TMDB API key from environment variables
-const TMDB_API_KEY = process.env.TMDB_API_KEY
+const TMDB_API_KEY = process.env.TMDB_API_KEY;
 
+// Define the addon manifest for Filipino movies
 const manifest = {
-    "id": "org.vidsrcaddon",
-    "version": "1.0.0",
-    "name": "Vidsrc Streams",
-    "description": "Stream movies and TV shows from vidsrc.to",
-    "types": ["movie", "series"],
-    "catalogs": [
-        {
-            type: 'movie',
-            id: 'vidsrc_movies',
-            name: 'Vidsrc Movies',
-            extra: [
-                {
-                    name: 'skip',
-                    isRequired: false,
-                },
-            ],
-        },
-        {
-            type: 'series',
-            id: 'vidsrc_series',
-            name: 'Vidsrc TV Shows',
-            extra: [
-                {
-                    name: 'skip',
-                    isRequired: false,
-                },
-            ],
-        }
-    ],
-    "resources": ["catalog", "stream"],
-    "idPrefixes": ["tt", "tmdb:"]
+  id: "org.filipinomoviesaddon",
+  version: "1.0.0",
+  name: "Pinoy Movies",
+  description: "Listahan ng mga Pinoy Movies.",
+  types: ["movie"],
+  catalogs: [
+    {
+      type: "movie",
+      id: "filipino_movies",
+      name: "Latest Pinoy Movies",
+      extra: [{ name: "skip", isRequired: false }],
+    },
+  ],
+  resources: ["catalog", "stream", "meta"], // Added "meta" resource
+  idPrefixes: ["tmdb"],
+  logo: "https://res.cloudinary.com/dlvr5hpzp/image/upload/v1729859442/Vivamax_app_icon_mfsyys.jpg", // Replace with your logo URL
+};
+
+const builder = new addonBuilder(manifest);
+
+// Catalog handler to fetch the latest Filipino movies from TMDB
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+  console.log(`Catalog request - Type: ${type}, ID: ${id}, Extra:`, extra);
+
+  const page = extra.skip ? Math.floor(extra.skip / 20) + 1 : 1;
+
+  // Fetch the latest Filipino movies from TMDB
+  const url = `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_API_KEY}&language=tl&page=${page}&sort_by=popularity.desc&with_original_language=tl`;
+
+  try {
+    const response = await axios.get(url);
+    const movies = response.data.results;
+
+    // Format TMDB data to Stremio catalog metadata
+    const metas = movies.map((movie) => ({
+      id: `tmdb:${movie.id}`,
+      type: "movie",
+      name: movie.title,
+      poster: `https://image.tmdb.org/t/p/w500${movie.poster_path}`,
+      background: `https://image.tmdb.org/t/p/original${movie.backdrop_path}`,
+      posterShape: "regular",
+      imdbRating: movie.vote_average,
+      year: new Date(movie.release_date).getFullYear(),
+      description: movie.overview,
+    }));
+
+    return { metas };
+  } catch (error) {
+    console.error("Error fetching catalog:", error);
+    return { metas: [] };
+  }
+});
+
+// New metadata handler to fetch detailed movie information
+builder.defineMetaHandler(async ({ id }) => {
+  console.log(`Meta request for ID: ${id}`);
+
+  // Extract TMDB ID for fetching details
+  const cleanedId = id.startsWith("tmdb:") ? id.substring(5) : id;
+
+  // Fetch movie details from TMDB
+  const url = `https://api.themoviedb.org/3/movie/${cleanedId}?api_key=${TMDB_API_KEY}&language=tl`;
+
+  try {
+    const response = await axios.get(url);
+    const movie = response.data;
+
+    // Construct and return detailed metadata
+    return {
+      id: `tmdb:${movie.id}`,
+      type: "movie",
+      name: movie.title,
+      description: movie.overview,
+      poster: `https://image.tmdb.org/t/p/w500${movie.poster_path}`,
+      background: `https://image.tmdb.org/t/p/original${movie.backdrop_path}`,
+      genres: movie.genres.map((genre) => genre.name).join(", "), // Join genres as a string
+      cast: await fetchCast(movie.id), // Fetch cast information
+      director: await fetchDirector(movie.id), // Fetch director information
+      year: new Date(movie.release_date).getFullYear(),
+    };
+  } catch (error) {
+    console.error("Error fetching movie details:", error);
+    return null; // Return null if an error occurs
+  }
+});
+
+// Helper function to fetch cast information
+async function fetchCast(movieId) {
+  const url = `https://api.themoviedb.org/3/movie/${movieId}/credits?api_key=${TMDB_API_KEY}&language=tl`;
+  try {
+    const response = await axios.get(url);
+    return response.data.cast
+      .slice(0, 5)
+      .map((actor) => actor.name)
+      .join(", "); // Return top 5 cast members
+  } catch (error) {
+    console.error("Error fetching cast:", error);
+    return "Unknown"; // Fallback in case of error
+  }
 }
 
-const builder = new addonBuilder(manifest)
+// Helper function to fetch director information
+async function fetchDirector(movieId) {
+  const url = `https://api.themoviedb.org/3/movie/${movieId}/credits?api_key=${TMDB_API_KEY}&language=tl`;
+  try {
+    const response = await axios.get(url);
+    const director = response.data.crew.find(
+      (member) => member.job === "Director"
+    );
+    return director ? director.name : "Unknown"; // Return director's name or unknown
+  } catch (error) {
+    console.error("Error fetching director:", error);
+    return "Unknown"; // Fallback in case of error
+  }
+}
 
-// Stream handler for both movies and TV shows
-builder.defineStreamHandler(async ({ type, id, season, episode }) => {
-    console.log(`Stream request - Type: ${type}, ID: ${id}, Season: ${season}, Episode: ${episode}`)
-    
-    // Clean TMDB ID if present
-    const cleanedId = id.startsWith('tmdb:') ? id.substring(5) : id
-    
-    if (type === 'movie') {
-        return {
-            streams: [{
-                title: 'Watch Movie',
-                url: `https://vidsrc.xyz/embed/movie/${cleanedId}`,
-                behaviorHints: {
-                    notWebReady: true,
-                }
-            }]
-        }
-    } else if (type === 'series' && season && episode) {
-        return {
-            streams: [{
-                title: `Watch S${season}E${episode}`,
-                url: `https://vidsrc.xyz/embed/tv/${cleanedId}/${season}/${episode}`,
-                behaviorHints: {
-                    notWebReady: true,
-                }
-            }]
-        }
-    }
+// Stream handler to provide external stream links
+builder.defineStreamHandler(async ({ type, id }) => {
+  console.log(`Stream request - Type: ${type}, ID: ${id}`);
 
-    return { streams: [] }
-})
+  // Extract TMDB ID for external link generation
+  const cleanedId = id.startsWith("tmdb:") ? id.substring(5) : id;
 
-// Catalog handler
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-    console.log(`Catalog request - Type: ${type}, ID: ${id}, Extra:`, extra)
+  // Provide a stream with `notWebReady` hint
+  return {
+    streams: [
+      {
+        title: "Watch on External Source",
+        url: `https://vidsrc.to/embed/movie/${cleanedId}`,
+        behaviorHints: {
+          notWebReady: true, // Opens in an external browser
+        },
+      },
+    ],
+  };
+});
 
-    const page = extra.skip ? Math.floor(extra.skip / 20) + 1 : 1
-
-    let url
-    if (type === 'movie') {
-        url = `https://api.themoviedb.org/3/movie/popular?api_key=${TMDB_API_KEY}&page=${page}`
-    } else if (type === 'series') {
-        url = `https://api.themoviedb.org/3/tv/popular?api_key=${TMDB_API_KEY}&page=${page}`
-    }
-
-    try {
-        const response = await axios.get(url)
-        const metas = response.data.results.map(item => ({
-            id: `tmdb:${item.id}`,
-            type: type,
-            name: item.title || item.name,
-            poster: `https://image.tmdb.org/t/p/w500${item.poster_path}`,
-            background: `https://image.tmdb.org/t/p/original${item.backdrop_path}`,
-            posterShape: 'regular',
-            imdbRating: item.vote_average,
-            year: new Date(item.release_date || item.first_air_date).getFullYear(),
-            description: item.overview,
-        }))
-
-        return { metas }
-    } catch (error) {
-        console.error('Error fetching catalog:', error)
-        return { metas: [] }
-    }
-})
-
-module.exports = builder.getInterface()
+module.exports = builder.getInterface(); // Added missing semicolon here

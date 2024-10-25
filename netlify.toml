@@ -1,0 +1,7 @@
+[build]
+  functions = "functions" # Directory where serverless functions are located
+
+[[redirects]]
+  from = "/manifest.json"
+  to = "/.netlify/functions/server"
+  status = 200
