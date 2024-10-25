@@ -9,3 +9,17 @@ serveHTTP(addonInterface, { port: 7000 })
   .catch((error) => {
     console.error("Failed to start addon:", error);
   });
+
+// const { serveHTTP } = require("stremio-addon-sdk");
+// const addonInterface = require("../addon");
+
+// exports.handler = (event, context) => {
+//   return new Promise((resolve) => {
+//     serveHTTP(addonInterface, { port: process.env.PORT || 3000 }, () => {
+//       resolve({
+//         statusCode: 200,
+//         body: "Add-on is running!",
+//       });
+//     });
+//   });
+// };
