@@ -1,7 +1,0 @@
-[build]
-
-
-[[redirects]]
-  from = "/manifest.json"
-  to = "/.netlify/server"
-  status = 200
