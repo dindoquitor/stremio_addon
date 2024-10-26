@@ -1,14 +1,16 @@
 {
   "name": "stremio_addon",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
+    "start:prod": "pm2 start server.js --name stremio-filipino-movies",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Stremio addon for Filipino movies from TMDB",
   "dependencies": {
     "axios": "^1.7.7",
     "dotenv": "^16.4.5",

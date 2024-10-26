@@ -1,3 +1,262 @@
+const { addonBuilder } = require("stremio-addon-sdk");
+const axios = require("axios");
+require("dotenv").config();
+
+// Configuration constants
+const CONFIG = {
+  TMDB_API_KEY: process.env.TMDB_API_KEY,
+  TMDB_BASE_URL: "https://api.themoviedb.org/3",
+  IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
+  ITEMS_PER_PAGE: 20,
+  MAX_CAST_MEMBERS: 5,
+  DEFAULT_LANGUAGE: "tl",
+  CACHE_TTL: 24 * 60 * 60, // 24 hours in seconds
+  MAX_RETRIES: 3,
+  RETRY_DELAY: 1000, // 1 second
+};
+
+// Validate environment variables
+if (!CONFIG.TMDB_API_KEY) {
+  throw new Error("TMDB_API_KEY environment variable is required");
+}
+
+// Create axios instance with default configuration
+const tmdbClient = axios.create({
+  baseURL: CONFIG.TMDB_BASE_URL,
+  params: {
+    api_key: CONFIG.TMDB_API_KEY,
+    language: CONFIG.DEFAULT_LANGUAGE,
+  },
+  timeout: 10000,
+  headers: {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  },
+});
+
+// Implement request retry logic
+tmdbClient.interceptors.response.use(undefined, async (err) => {
+  const { config } = err;
+  config.retryCount = config.retryCount || 0;
+
+  if (config.retryCount >= CONFIG.MAX_RETRIES) {
+    return Promise.reject(err);
+  }
+
+  config.retryCount += 1;
+
+  // Implement exponential backoff
+  const delay = CONFIG.RETRY_DELAY * Math.pow(2, config.retryCount - 1);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+
+  return tmdbClient(config);
+});
+
+const manifest = {
+  id: "org.filipinomoviesaddon",
+  version: "1.0.0",
+  name: "Pinoy Movies",
+  description:
+    "Discover Filipino movies from TMDB. A catalog addon for browsing Pinoy films.",
+  types: ["movie"],
+  catalogs: [
+    {
+      type: "movie",
+      id: "filipino_movies",
+      name: "Latest Pinoy Movies",
+      extra: [
+        { name: "skip", isRequired: false },
+        { name: "genre", isRequired: false },
+        { name: "search", isRequired: false },
+      ],
+    },
+  ],
+  resources: ["catalog", "meta"],
+  idPrefixes: ["tmdb"],
+  logo: "https://res.cloudinary.com/dlvr5hpzp/image/upload/v1729859442/Vivamax_app_icon_mfsyys.jpg",
+  background:
+    "https://res.cloudinary.com/dlvr5hpzp/image/upload/v1729859442/Vivamax_app_icon_mfsyys.jpg",
+  contactEmail: "your@email.com", // Add your contact email
+};
+
+// Helper functions
+const getImageUrl = (path, size = "w500") =>
+  path ? `${CONFIG.IMAGE_BASE_URL}/${size}${path}` : null;
+
+const extractTmdbId = (id) => {
+  const match = id.match(/^tmdb:(\d+)$/);
+  if (!match) throw new Error(`Invalid TMDB ID format: ${id}`);
+  return match[1];
+};
+
+const handleApiError = (error, context) => {
+  const errorDetails = {
+    message: error.message,
+    context,
+    timestamp: new Date().toISOString(),
+    status: error.response?.status,
+    data: error.response?.data,
+  };
+
+  console.error(JSON.stringify(errorDetails));
+
+  if (error.response?.status === 429) {
+    throw new Error("Rate limit exceeded. Please try again later.");
+  }
+
+  throw new Error(`Error in ${context}: ${error.message}`);
+};
+
+// Create addon builder
+const builder = new addonBuilder(manifest);
+
+// Enhanced catalog handler with search support
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+  try {
+    const page = extra.skip
+      ? Math.floor(extra.skip / CONFIG.ITEMS_PER_PAGE) + 1
+      : 1;
+
+    let endpoint = "/discover/movie";
+    let params = {
+      page,
+      sort_by: "popularity.desc",
+      with_original_language: CONFIG.DEFAULT_LANGUAGE,
+    };
+
+    // Handle search queries
+    if (extra.search) {
+      endpoint = "/search/movie";
+      params = {
+        ...params,
+        query: extra.search,
+        // Include Filipino language in search results
+        with_original_language: CONFIG.DEFAULT_LANGUAGE,
+      };
+    }
+
+    // Handle genre filtering
+    if (extra.genre) {
+      params.with_genres = extra.genre;
+    }
+
+    const { data } = await tmdbClient.get(endpoint, { params });
+
+    const metas = data.results
+      .filter((movie) => movie.poster_path && movie.overview) // Only include movies with posters and descriptions
+      .map((movie) => ({
+        id: `tmdb:${movie.id}`,
+        type: "movie",
+        name: movie.title,
+        poster: getImageUrl(movie.poster_path),
+        background: getImageUrl(movie.backdrop_path, "original"),
+        posterShape: "regular",
+        imdbRating: movie.vote_average,
+        year: movie.release_date
+          ? new Date(movie.release_date).getFullYear()
+          : null,
+        description: movie.overview,
+        releaseInfo: movie.release_date
+          ? new Date(movie.release_date).getFullYear().toString()
+          : "",
+        popularity: movie.popularity,
+      }));
+
+    return { metas };
+  } catch (error) {
+    handleApiError(error, "catalog");
+  }
+});
+
+// Enhanced meta handler with detailed information
+builder.defineMetaHandler(async ({ id }) => {
+  try {
+    const tmdbId = extractTmdbId(id);
+
+    const [movieDetails, credits] = await Promise.all([
+      tmdbClient.get(`/movie/${tmdbId}`),
+      tmdbClient.get(`/movie/${tmdbId}/credits`),
+    ]);
+
+    const movie = movieDetails.data;
+    const cast = credits.data.cast
+      .slice(0, CONFIG.MAX_CAST_MEMBERS)
+      .map((actor) => actor.name)
+      .join(", ");
+
+    const director =
+      credits.data.crew.find((member) => member.job === "Director")?.name ??
+      "Unknown";
+
+    return {
+      id: `tmdb:${movie.id}`,
+      type: "movie",
+      name: movie.title,
+      description: movie.overview,
+      releaseInfo: movie.release_date
+        ? new Date(movie.release_date).getFullYear().toString()
+        : "",
+      poster: getImageUrl(movie.poster_path),
+      background: getImageUrl(movie.backdrop_path, "original"),
+      runtime: movie.runtime ? `${movie.runtime} min` : null,
+      posterShape: "regular",
+      imdbRating: movie.vote_average,
+      year: movie.release_date
+        ? new Date(movie.release_date).getFullYear()
+        : null,
+      genres: movie.genres.map((genre) => genre.name),
+      cast,
+      director,
+      language: movie.original_language,
+      country: movie.production_countries?.[0]?.name,
+      website: movie.homepage || null,
+      popularity: movie.popularity,
+      keywords: movie.keywords?.keywords?.map((k) => k.name).join(", ") || "",
+      trailers:
+        movie.videos?.results
+          ?.filter(
+            (video) => video.type === "Trailer" && video.site === "YouTube"
+          )
+          .map((trailer) => ({
+            source: trailer.site,
+            id: trailer.key,
+          })) || [],
+      links: [
+        {
+          name: "TMDB",
+          category: "external",
+          url: `https://www.themoviedb.org/movie/${movie.id}`,
+        },
+      ],
+    };
+  } catch (error) {
+    handleApiError(error, "meta");
+  }
+});
+
+// Error handling for uncaught exceptions
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error.stack);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("Received SIGTERM. Performing graceful shutdown...");
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("Received SIGINT. Performing graceful shutdown...");
+  process.exit(0);
+});
+
+module.exports = builder.getInterface();
+
 // const { addonBuilder } = require("stremio-addon-sdk");
 // const axios = require("axios");
 // require("dotenv").config();
@@ -335,217 +594,3 @@
 // });
 
 // module.exports = builder.getInterface();
-
-const { addonBuilder } = require("stremio-addon-sdk");
-const axios = require("axios");
-require("dotenv").config();
-
-// Configuration constants
-const CONFIG = {
-  TMDB_API_KEY: process.env.TMDB_API_KEY,
-  TMDB_BASE_URL: "https://api.themoviedb.org/3",
-  IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
-  STREAM_SOURCES: {
-    STREAMUG: "https://streamug.com/video",
-    MOVIEHAB: "https://moviehab.to/embed",
-  },
-  ITEMS_PER_PAGE: 20,
-  MAX_CAST_MEMBERS: 5,
-  DEFAULT_LANGUAGE: "tl",
-};
-
-// Validate environment variables
-if (!CONFIG.TMDB_API_KEY) {
-  throw new Error("TMDB_API_KEY environment variable is required");
-}
-
-// Create axios instance with default configuration
-const tmdbClient = axios.create({
-  baseURL: CONFIG.TMDB_BASE_URL,
-  params: {
-    api_key: CONFIG.TMDB_API_KEY,
-    language: CONFIG.DEFAULT_LANGUAGE,
-  },
-  timeout: 10000,
-});
-
-const manifest = {
-  id: "org.filipinomoviesaddon",
-  version: "1.0.0",
-  name: "Pinoy Movies",
-  description: "Listahan ng mga Pinoy Movies.",
-  types: ["movie"],
-  catalogs: [
-    {
-      type: "movie",
-      id: "filipino_movies",
-      name: "Latest Pinoy Movies",
-      extra: [{ name: "skip", isRequired: false }],
-    },
-  ],
-  resources: ["catalog", "stream", "meta"],
-  idPrefixes: ["tmdb"],
-  logo: "https://res.cloudinary.com/dlvr5hpzp/image/upload/v1729859442/Vivamax_app_icon_mfsyys.jpg",
-};
-
-// Helper functions
-const getImageUrl = (path, size = "w500") =>
-  path ? `${CONFIG.IMAGE_BASE_URL}/${size}${path}` : null;
-
-const extractTmdbId = (id) => {
-  const match = id.match(/^tmdb:(\d+)$/);
-  if (!match) throw new Error(`Invalid TMDB ID format: ${id}`);
-  return match[1];
-};
-
-const handleApiError = (error, context) => {
-  const errorDetails = {
-    message: error.message,
-    context,
-    timestamp: new Date().toISOString(),
-    status: error.response?.status,
-    data: error.response?.data,
-  };
-
-  console.error(JSON.stringify(errorDetails));
-
-  if (error.response?.status === 429) {
-    throw new Error("Rate limit exceeded. Please try again later.");
-  }
-
-  throw new Error(`Error in ${context}: ${error.message}`);
-};
-
-// Create addon builder
-const builder = new addonBuilder(manifest);
-
-// Catalog handler
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  try {
-    const page = extra.skip
-      ? Math.floor(extra.skip / CONFIG.ITEMS_PER_PAGE) + 1
-      : 1;
-
-    const { data } = await tmdbClient.get("/discover/movie", {
-      params: {
-        page,
-        sort_by: "popularity.desc",
-        with_original_language: CONFIG.DEFAULT_LANGUAGE,
-      },
-    });
-
-    const metas = data.results.map((movie) => ({
-      id: `tmdb:${movie.id}`,
-      type: "movie",
-      name: movie.title,
-      poster: getImageUrl(movie.poster_path),
-      background: getImageUrl(movie.backdrop_path, "original"),
-      posterShape: "regular",
-      imdbRating: movie.vote_average,
-      year: movie.release_date
-        ? new Date(movie.release_date).getFullYear()
-        : null,
-      description: movie.overview,
-    }));
-
-    return { metas };
-  } catch (error) {
-    handleApiError(error, "catalog");
-  }
-});
-
-// Meta handler
-builder.defineMetaHandler(async ({ id }) => {
-  try {
-    const tmdbId = extractTmdbId(id);
-
-    const [movieDetails, credits] = await Promise.all([
-      tmdbClient.get(`/movie/${tmdbId}`),
-      tmdbClient.get(`/movie/${tmdbId}/credits`),
-    ]);
-
-    const movie = movieDetails.data;
-    const cast = credits.data.cast
-      .slice(0, CONFIG.MAX_CAST_MEMBERS)
-      .map((actor) => actor.name)
-      .join(", ");
-
-    const director =
-      credits.data.crew.find((member) => member.job === "Director")?.name ??
-      "Unknown";
-
-    return {
-      id: `tmdb:${movie.id}`,
-      type: "movie",
-      name: movie.title,
-      description: movie.overview,
-      poster: getImageUrl(movie.poster_path),
-      background: getImageUrl(movie.backdrop_path, "original"),
-      genres: movie.genres.map((genre) => genre.name).join(", "),
-      cast,
-      director,
-      year: movie.release_date
-        ? new Date(movie.release_date).getFullYear()
-        : null,
-      runtime: movie.runtime,
-      language: movie.original_language,
-      country: movie.production_countries?.[0]?.name,
-    };
-  } catch (error) {
-    handleApiError(error, "meta");
-  }
-});
-
-// Stream handler with multiple sources
-builder.defineStreamHandler(async ({ type, id }) => {
-  try {
-    const tmdbId = extractTmdbId(id);
-    const { data: movie } = await tmdbClient.get(`/movie/${tmdbId}`);
-
-    return {
-      streams: [
-        {
-          // StreamUG Source
-          name: `Watch on StreamUG`,
-          title: movie.title,
-          url: `${CONFIG.STREAM_SOURCES.STREAMUG}/${tmdbId}`,
-          behaviorHints: {
-            bingeGroup: `tmdb-${tmdbId}`,
-            notWebReady: true,
-          },
-          type: "movie",
-          source: "StreamUG",
-          quality: "HD",
-        },
-        {
-          // MovieHab Source
-          name: `Watch on MovieHab`,
-          title: movie.title,
-          url: `${CONFIG.STREAM_SOURCES.MOVIEHAB}/${tmdbId}`,
-          behaviorHints: {
-            bingeGroup: `tmdb-${tmdbId}`,
-            notWebReady: true,
-          },
-          type: "movie",
-          source: "MovieHab",
-          quality: "HD",
-        },
-      ],
-    };
-  } catch (error) {
-    handleApiError(error, "stream");
-  }
-});
-
-// Error handling for uncaught exceptions
-process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
-  process.exit(1);
-});
-
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
-  process.exit(1);
-});
-
-module.exports = builder.getInterface();
