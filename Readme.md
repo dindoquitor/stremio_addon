@@ -14,4 +14,4 @@ This project is a Stremio addon that lists the latest Filipino movies, allowing 
 
 ## Installation
 
-Visit this link: https://dindz-addon.onrender.com/ and click on the "Install" button to install the addon in your Stremio app.
+Visit **[https://stremio.playpixelpro.com/](https://stremio.playpixelpro.com/)** and click the **Install in Stremio** button to add the addon to your Stremio app.
