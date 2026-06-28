@@ -22,3 +22,6 @@ pids
 *.pid
 *.seed
 *.pid.lock
+
+# Test coverage
+coverage/

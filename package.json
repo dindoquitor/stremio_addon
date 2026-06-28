@@ -2,18 +2,38 @@
   "name": "stremio_addon",
   "version": "1.0.0",
   "main": "server.js",
+  "engines": {
+    "node": ">=16"
+  },
   "scripts": {
     "start": "node server.js",
     "start:prod": "pm2 start server.js --name stremio-filipino-movies",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,json,md}\"",
+    "test": "jest",
+    "test:watch": "jest --watch"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "Stremio addon for Filipino movies from TMDB",
+  "keywords": [
+    "stremio",
+    "addon",
+    "filipino",
+    "movies",
+    "tmdb"
+  ],
+  "author": "Dindo Quitor",
+  "license": "BSD-3-Clause",
+  "description": "Stremio addon for Filipino movies sourced from TMDB",
   "dependencies": {
     "axios": "^1.7.7",
+    "cheerio": "^1.0.0",
     "dotenv": "^16.4.5",
     "stremio-addon-sdk": "^1.6.10"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.3.3"
   }
 }
