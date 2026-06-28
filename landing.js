@@ -316,7 +316,7 @@ function getLandingPage(baseUrl) {
         ? 'url(' + movie.background + ')'
         : 'url(' + IMAGE_BASE + '/original' + (movie.backdrop_path || '') + ')';
 
-      const rating = movie.imdbRating != null ? movie.imdbRating.toFixed(1) : "—";
+      const rating = movie.imdbRating != null ? Number(movie.imdbRating).toFixed(1) : "—";
       const year = movie.year || "";
 
       var genres = movie.genres || "";
@@ -350,7 +350,7 @@ function getLandingPage(baseUrl) {
 
     // ── Build movie cards ─────────────────────
     function buildCard(movie) {
-      var rating = movie.imdbRating != null ? movie.imdbRating.toFixed(1) : "";
+      var rating = movie.imdbRating != null ? Number(movie.imdbRating).toFixed(1) : "";
       var year = movie.year || "";
       var posterUrl = movie.poster || (IMAGE_BASE + '/w500' + (movie.poster_path || ''));
       var fallbackSvg = 'data:image/svg+xml,' + encodeURIComponent(

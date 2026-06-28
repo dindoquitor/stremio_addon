@@ -1,6 +1,7 @@
 node_modules/
 .env
 .DS_Store
+Moviebox-API-main/
 
 # Dependencies
 node_modules/

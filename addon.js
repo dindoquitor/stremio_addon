@@ -1,7 +1,6 @@
 const { addonBuilder } = require("stremio-addon-sdk");
 const axios = require("axios");
 require("dotenv").config();
-const cheerio = require("cheerio");
 
 /**
  * @typedef {Object} MovieMeta
@@ -11,13 +10,13 @@ const cheerio = require("cheerio");
  * @property {string|null} poster
  * @property {string|null} background
  * @property {string} [posterShape]
- * @property {number} [imdbRating]
- * @property {number|null} [year]
+ * @property {string} [imdbRating]
+ * @property {string} [releaseInfo]
  * @property {string} [description]
- * @property {string} [genres]
- * @property {string} [cast]
- * @property {string} [director]
- * @property {number} [runtime]
+ * @property {string[]} [genres]
+ * @property {string[]} [cast]
+ * @property {string[]} [director]
+ * @property {string} [runtime]
  * @property {string} [language]
  * @property {string} [country]
  */
@@ -282,8 +281,10 @@ builder.defineCatalogHandler(async ({ type: _type, id: _id, extra = {} }) => {
       poster: getImageUrl(movie.poster_path),
       background: getImageUrl(movie.backdrop_path, "original"),
       posterShape: "regular",
-      imdbRating: movie.vote_average,
-      year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
+      imdbRating: movie.vote_average != null ? String(movie.vote_average) : undefined,
+      releaseInfo: movie.release_date
+        ? String(new Date(movie.release_date).getFullYear())
+        : undefined,
       description: movie.overview,
     }));
 
@@ -327,31 +328,86 @@ builder.defineMetaHandler(async ({ id }) => {
     const movie = movieDetails.data;
     const cast = credits.data.cast
       .slice(0, CONFIG.MAX_CAST_MEMBERS)
-      .map((actor) => actor.name)
-      .join(", ");
+      .map((actor) => actor.name);
 
     const director =
       credits.data.crew.find((member) => member.job === "Director")?.name ?? "Unknown";
 
-    return {
+    /** @type {import("./addon").MovieMeta} */
+    const metaObj = {
       id: `tmdb:${movie.id}`,
       type: "movie",
       name: movie.title,
       description: movie.overview,
       poster: getImageUrl(movie.poster_path),
       background: getImageUrl(movie.backdrop_path, "original"),
-      genres: movie.genres.map((genre) => genre.name).join(", "),
+      genres: movie.genres.map((genre) => genre.name),
       cast,
-      director,
-      year: movie.release_date ? new Date(movie.release_date).getFullYear() : null,
-      runtime: movie.runtime,
+      director: [director],
+      releaseInfo: movie.release_date
+        ? String(new Date(movie.release_date).getFullYear())
+        : undefined,
+      runtime: movie.runtime ? `${movie.runtime}m` : undefined,
+      imdbRating: movie.vote_average != null ? String(movie.vote_average) : undefined,
       language: movie.original_language,
       country: movie.production_countries?.[0]?.name,
     };
+
+    return { meta: metaObj };
   } catch (error) {
     handleApiError(error, "meta");
   }
 });
+
+// ─── MovieBox API Configuration ───────────────────────────────────────────────
+
+const MOVIEBOX = {
+  API_BASE: "https://h5-api.aoneroom.com/wefeed-h5api-bff",
+  SEARCH_URL: "https://h5-api.aoneroom.com/wefeed-h5api-bff/subject/search",
+  DOMAIN_URL: "https://h5-api.aoneroom.com/wefeed-h5api-bff/media-player/get-domain",
+  DETAIL_BASE: "https://moviebox.ph/detail",
+  HEADERS: {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Content-Type": "application/json",
+  },
+  PLAYER_HEADERS: {
+    accept: "application/json",
+    "accept-language": "en-US,en;q=0.9",
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "x-client-info": '{"timezone":"Asia/Manila"}',
+    "x-source": "",
+  },
+  PLAYER_COOKIES: {
+    uuid: "d8c3539e-2e46-4000-af20-7046a856e30a",
+  },
+  STREAM_CACHE_TTL: 30 * 60 * 1000, // 30 minutes
+};
+
+/**
+ * Normalize a title for comparison: lowercase, remove punctuation and extra spaces.
+ * @param {string} title
+ * @returns {string}
+ */
+const normalizeTitle = (title) =>
+  title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Check if two titles are a reasonable match.
+ * @param {string} tmdbTitle
+ * @param {string} mbTitle
+ * @returns {boolean}
+ */
+const titlesMatch = (tmdbTitle, mbTitle) => {
+  const a = normalizeTitle(tmdbTitle);
+  const b = normalizeTitle(mbTitle);
+  return a.includes(b) || b.includes(a);
+};
 
 // ─── Stream Handler ──────────────────────────────────────────────────────────
 
@@ -359,7 +415,13 @@ builder.defineStreamHandler(async ({ id }) => {
   try {
     const tmdbId = extractTmdbId(id);
     const movieCacheKey = `movie:${tmdbId}`;
+    const streamCacheKey = `stream:${tmdbId}`;
 
+    // Check stream cache first
+    const cachedStreams = cache.get(streamCacheKey);
+    if (cachedStreams) return cachedStreams;
+
+    // Get TMDB movie data
     let movieData;
     const cached = cache.get(movieCacheKey);
     if (cached) {
@@ -372,73 +434,138 @@ builder.defineStreamHandler(async ({ id }) => {
       movieData = res.data;
     }
 
-    const searchQuery = encodeURIComponent(movieData.title.toLowerCase());
-    const searchUrl = `https://moviebox.ng/?s=${searchQuery}`;
+    const movieTitle = movieData.title;
 
-    /** @type {import("axios").AxiosResponse} */
-    let searchRes;
+    // ── Step 1: Search MovieBox API for the movie ──────────────────────────
+    console.log(`[STREAM] Searching MovieBox for: "${movieTitle}"`);
+    let searchResults;
     try {
-      searchRes = await axios.get(searchUrl, {
-        timeout: CONFIG.REQUEST_TIMEOUT,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
-      });
+      const searchRes = await axios.post(
+        MOVIEBOX.SEARCH_URL,
+        { keyword: movieTitle, perPage: 10, page: 1 },
+        { headers: MOVIEBOX.HEADERS, timeout: 15000 }
+      );
+      searchResults = searchRes.data?.data?.items || [];
     } catch (err) {
-      console.warn(`[STREAM] Search failed for "${movieData.title}": ${err.message}`);
+      console.warn(`[STREAM] MovieBox search failed: ${err.message}`);
       return { streams: [] };
     }
 
-    const $search = cheerio.load(searchRes.data);
-    let moviePageUrl = null;
+    if (!searchResults.length) {
+      console.log(`[STREAM] No MovieBox results for "${movieTitle}"`);
+      return { streams: [] };
+    }
 
-    $search("article").each((_, el) => {
-      const title = $search(el).find("h2.entry-title").text().toLowerCase();
-      const href = $search(el).find("a").attr("href");
-      if (title.includes(movieData.title.toLowerCase()) && href?.includes("/movies/")) {
-        moviePageUrl = href;
-        return false;
+    // ── Step 2: Find the best matching result ─────────────────────────────
+    let bestMatch = null;
+    for (const item of searchResults) {
+      const itemTitle = item.title || "";
+      if (titlesMatch(movieTitle, itemTitle)) {
+        bestMatch = item;
+        break;
       }
+    }
+    // Fallback: use the first result if no title match
+    if (!bestMatch) {
+      bestMatch = searchResults[0];
+      console.log(
+        `[STREAM] No exact title match for "${movieTitle}", using: "${bestMatch.title}"`
+      );
+    }
+
+    const subjectId = bestMatch.subjectId || bestMatch.id;
+    const detailPath = bestMatch.detailPath;
+
+    if (!subjectId || !detailPath) {
+      console.log(`[STREAM] Missing subjectId or detailPath for "${movieTitle}"`);
+      return { streams: [] };
+    }
+
+    console.log(
+      `[STREAM] Matched: "${bestMatch.title}" (subjectId=${subjectId}, slug=${detailPath})`
+    );
+
+    // ── Step 3: Get the player CDN domain ─────────────────────────────────
+    let streamDomain = "https://123movienow.cc"; // fallback
+    try {
+      const domainRes = await axios.get(MOVIEBOX.DOMAIN_URL, {
+        headers: {
+          "User-Agent": MOVIEBOX.HEADERS["User-Agent"],
+          "X-Client-Info": '{"timezone":"Asia/Manila"}',
+          "X-Client-Type": "h5",
+          "X-App-Version": "1.0.0",
+        },
+        timeout: 10000,
+      });
+      if (domainRes.data?.data) {
+        streamDomain = domainRes.data.data.replace(/\/$/, "");
+      }
+    } catch (err) {
+      console.warn(`[STREAM] Could not fetch player domain, using fallback: ${err.message}`);
+    }
+
+    // ── Step 4: Fetch stream URLs from the player API ─────────────────────
+    const playUrl =
+      `${streamDomain}/wefeed-h5api-bff/subject/play` +
+      `?subjectId=${subjectId}&se=0&ep=0&detailPath=${encodeURIComponent(detailPath)}`;
+
+    const cookieString = Object.entries(MOVIEBOX.PLAYER_COOKIES)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+
+    const playRes = await axios.get(playUrl, {
+      headers: {
+        ...MOVIEBOX.PLAYER_HEADERS,
+        Cookie: cookieString,
+        referer:
+          `${streamDomain}/spa/videoPlayPage/movies/${detailPath}` +
+          `?id=${subjectId}&type=/movie/detail&detailSe=&detailEp=&lang=en`,
+      },
+      timeout: 15000,
     });
 
-    if (!moviePageUrl) {
-      console.log(`[STREAM] No MovieBox page found for "${movieData.title}"`);
+    const streams = playRes.data?.data?.streams || [];
+    if (!streams.length) {
+      console.log(`[STREAM] No streams available for "${movieTitle}"`);
       return { streams: [] };
     }
 
-    /** @type {import("axios").AxiosResponse} */
-    let movieRes;
-    try {
-      movieRes = await axios.get(moviePageUrl, {
-        timeout: CONFIG.REQUEST_TIMEOUT,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        },
-      });
-    } catch (err) {
-      console.warn(`[STREAM] Movie page fetch failed for "${movieData.title}": ${err.message}`);
-      return { streams: [] };
-    }
-
-    const $movie = cheerio.load(movieRes.data);
-    const videoUrl = $movie("video.art-video").attr("src");
-
-    if (!videoUrl || !videoUrl.startsWith("http")) {
-      console.log(`[STREAM] No valid video source for "${movieData.title}"`);
-      return { streams: [] };
-    }
-
-    return {
-      streams: [
-        {
-          title: "Watch in HD (MovieBox)",
-          url: videoUrl,
+    // ── Step 5: Build Stremio stream objects ──────────────────────────────
+    const stremioStreams = streams
+      .filter((s) => s.url && s.url.startsWith("http"))
+      .map((s) => {
+        const resolution = s.resolutions ? `${s.resolutions}p` : "";
+        const format = s.format ? s.format.toUpperCase() : "";
+        const label = [resolution, format, "(MovieBox)"].filter(Boolean).join(" ");
+        return {
+          title: label,
+          url: s.url,
           behaviorHints: {
-            notWebReady: false,
+            notWebReady: s.format === "m3u8" || s.url.includes(".m3u8"),
           },
-        },
-      ],
-    };
+        };
+      });
+
+    if (!stremioStreams.length) {
+      console.log(`[STREAM] No valid stream URLs for "${movieTitle}"`);
+      return { streams: [] };
+    }
+
+    // Sort: highest resolution first
+    stremioStreams.sort((a, b) => {
+      const resA = parseInt(a.title.match(/(\d+)p/)?.[1] || "0", 10);
+      const resB = parseInt(b.title.match(/(\d+)p/)?.[1] || "0", 10);
+      return resB - resA;
+    });
+
+    console.log(
+      `[STREAM] Found ${stremioStreams.length} stream(s) for "${movieTitle}":`,
+      stremioStreams.map((s) => s.title).join(", ")
+    );
+
+    const result = { streams: stremioStreams };
+    cache.set(streamCacheKey, result, MOVIEBOX.STREAM_CACHE_TTL);
+    return result;
   } catch (error) {
     console.error(`[STREAM] Handler error: ${error.message}`);
     return { streams: [] };
