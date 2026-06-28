@@ -4,9 +4,7 @@
  * @returns {string} Complete HTML page
  */
 function getLandingPage(baseUrl) {
-  const manifestUrl = `${baseUrl}/manifest.json`;
-  const catalogUrl = `${baseUrl}/catalog/movie/filipino_movies.json`;
-  const installLink = `stremio://addon?url=${encodeURIComponent(manifestUrl)}`;
+  const installLink = `stremio://addon?url=${encodeURIComponent(baseUrl + "/manifest.json")}`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -112,8 +110,8 @@ function getLandingPage(baseUrl) {
     .hero-meta { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; color: var(--text-muted); font-size: 0.95rem; }
     .hero-rating { display: flex; align-items: center; gap: 6px; color: var(--accent); font-weight: 700; }
     .hero-rating svg { width: 18px; height: 18px; }
-    .hero-desc { font-size: 0.95rem; line-height: 1.6; color: var(--text-muted); margin-bottom: 26px;
-      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .hero-desc { font-size: 0.95rem; line-height: 1.6; color: var(--text-muted); margin-bottom: 14px;
+      display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
     .hero-actions { display: flex; gap: 14px; flex-wrap: wrap; }
 
     @keyframes fadeUp {
@@ -208,6 +206,7 @@ function getLandingPage(baseUrl) {
       .hero { height: 70vh; min-height: 420px; padding-bottom: 6vh; }
       .movie-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
       .nav-logo { font-size: 1.3rem; }
+      .nav-actions { display: none; }
       .hero-actions { flex-direction: column; }
       .btn { width: 100%; justify-content: center; }
     }
@@ -285,7 +284,7 @@ function getLandingPage(baseUrl) {
   </footer>
 
   <script>
-    const CATALOG_URL = "${catalogUrl}";
+    const CATALOG_URL = "/catalog/movie/filipino_movies.json";
     const IMAGE_BASE = "https://image.tmdb.org/t/p";
     let allMovies = [];
 
@@ -296,12 +295,12 @@ function getLandingPage(baseUrl) {
 
     // ── Copy link ─────────────────────────────
     function copyLink() {
-      navigator.clipboard.writeText("${manifestUrl}").then(() => {
+      navigator.clipboard.writeText(window.location.origin + "/manifest.json").then(() => {
         const t = document.getElementById("toast");
         t.classList.add("show");
         setTimeout(() => t.classList.remove("show"), 2200);
       }).catch(() => {
-        prompt("Copy this link:", "${manifestUrl}");
+        prompt("Copy this link:", window.location.origin + "/manifest.json");
       });
     }
 
@@ -320,14 +319,17 @@ function getLandingPage(baseUrl) {
       const rating = movie.imdbRating != null ? movie.imdbRating.toFixed(1) : "—";
       const year = movie.year || "";
 
+      var genres = movie.genres || "";
+      var desc = movie.description || "A must-watch Filipino film.";
       content.innerHTML = '' +
         '<div class="hero-tag">Now Playing</div>' +
         '<h1 class="hero-title">' + escapeHtml(movie.name) + '</h1>' +
+        '<p class="hero-desc">' + escapeHtml(desc) + '</p>' +
         '<div class="hero-meta">' +
           '<span class="hero-rating">' + starSvg + ' ' + rating + '</span>' +
           (year ? '<span>' + year + '</span>' : '') +
+          (genres ? '<span>' + escapeHtml(genres) + '</span>' : '') +
         '</div>' +
-        (movie.description ? '<p class="hero-desc">' + escapeHtml(movie.description) + '</p>' : '') +
         '<div class="hero-actions">' +
           '<a class="btn btn-primary" href="${installLink}">' +
             '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm6 4v6.17l-2.59-2.58L7 12l5 5 5-5-1.41-1.41L13 13.17V7h-2z"/></svg>' +

@@ -6,8 +6,9 @@ const getLandingPage = require("./landing");
 const PORT = parseInt(process.env.PORT, 10) || 7000;
 const app = express();
 
-app.get("/", (_req, res) => {
-  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+app.get("/", (req, res) => {
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  const baseUrl = process.env.BASE_URL || `${protocol}://${req.get("host")}`;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(getLandingPage(baseUrl));
 });
