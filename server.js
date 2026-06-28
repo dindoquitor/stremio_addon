@@ -1,21 +1,29 @@
-const { serveHTTP } = require("stremio-addon-sdk");
+const express = require("express");
+const { getRouter } = require("stremio-addon-sdk");
 const addonInterface = require("./addon");
+const getLandingPage = require("./landing");
 
 const PORT = parseInt(process.env.PORT, 10) || 7000;
+const app = express();
 
-serveHTTP(addonInterface, { port: PORT })
-  .then(({ url }) => {
-    console.log(`[SERVER] Addon active on: ${url}`);
-    console.log(`[SERVER] Manifest: ${url}/manifest.json`);
-  })
-  .catch((error) => {
-    console.error("[SERVER] Failed to start:", error.message);
-    process.exit(1);
-  });
+app.get("/", (_req, res) => {
+  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(getLandingPage(baseUrl));
+});
+
+app.use(getRouter(addonInterface));
+
+const server = app.listen(PORT, () => {
+  const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+  console.log(`[SERVER] Addon active on: ${baseUrl}`);
+  console.log(`[SERVER] Manifest: ${baseUrl}/manifest.json`);
+  console.log(`[SERVER] Landing: ${baseUrl}`);
+});
 
 const shutdown = (signal) => {
   console.log(`[SERVER] ${signal} received, shutting down`);
-  process.exit(0);
+  server.close(() => process.exit(0));
 };
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
